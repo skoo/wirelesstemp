@@ -1,0 +1,1269 @@
+Disassembly Listing for wirelesstemp
+Generated From:
+
+---  Z:/wirelesstemp.X/main.c  --------------------------------------------------------------------------
+1:             #include <p18f13k22.h>
+2:             
+3:             #pragma config FOSC = IRC
+4:             #pragma config PLLEN = OFF
+5:             #pragma config PCLKEN = ON
+6:             #pragma config FCMEN = OFF
+7:             #pragma config IESO = OFF
+8:             #pragma config BOREN = OFF
+9:             #pragma config HFOFST = ON
+10:            #pragma config STVREN = ON
+11:            #pragma config WRTD = OFF
+12:            #pragma config LVP = OFF
+13:            #pragma config XINST = OFF
+14:            #pragma config WDTPS = 16384 /* 16384*4ms = 65.536s */
+15:            #pragma config WDTEN = ON
+16:            #pragma config MCLRE = OFF
+17:            
+18:            #define PROGRAM_EEPROM_ID 0x51
+19:            
+20:            #define CS_TEMPERATURE  PORTCbits.RC3
+21:            #define RF_CE           PORTCbits.RC4
+22:            
+23:            #define TC77_SHUTDOWN 1
+24:            #define TC77_CONTCONV 0
+25:            
+26:            #define TC77_NOT_READY 0x8000
+27:            
+28:            #define RF_SHUTDOWN 1
+29:            #define RF_POWERON  0
+30:            
+31:            static void rf_init(void);
+32:            static void rf_mode(unsigned char shutdown);
+33:            static void rf_send_temp(int t);
+34:            
+35:            static void tc77_mode(unsigned char shutdown);
+36:            static int tc77_read_temp(void);
+37:            
+38:            static unsigned char _id;
+39:            
+40:            /* 18f+tc77+step-up pull 89uA @ 1.5V when in sleep mode
+41:             * 
+42:             */
+43:            
+44:            void main(void)
+0008  CFD9     MOVFF FSR2L, POSTINC1
+000A  FFE6     NOP
+000C  CFE1     MOVFF FSR1L, FSR2L
+000E  FFD9     NOP
+0010  0E02     MOVLW 0x2
+0012  26E1     ADDWF FSR1L, F, ACCESS
+45:            {
+46:                int t;
+47:            
+48:                ANSEL = 0;  /* all ports digital */
+0014  6A7E     CLRF ANSEL, ACCESS
+49:                ANSELH = 0;
+0016  6A7F     CLRF ANSELH, ACCESS
+50:            
+51:                /* set unused pins as outputs */
+52:                TRISA = 0b00000100; // RA2: RF2400 IRQ
+0018  0E04     MOVLW 0x4
+001A  6E92     MOVWF TRISA, ACCESS
+53:                TRISB = 0b00010000; // R45: SDI
+001C  0E10     MOVLW 0x10
+001E  6E93     MOVWF TRISB, ACCESS
+54:                TRISC = 0b00000000;
+0020  6A94     CLRF TRISC, ACCESS
+55:            
+56:                CS_TEMPERATURE = 1;
+0022  8682     BSF PORTC, 3, ACCESS
+57:            
+58:                /* Input data sampled at middle of data output time */
+59:                SSPSTATbits.SMP = 0;
+0024  9EC7     BCF SSPSTAT, 7, ACCESS
+60:                 /* Transmit occurs on transition from Idle to active clock state */
+61:                SSPSTATbits.CKE = 0;
+0026  9CC7     BCF SSPSTAT, 6, ACCESS
+62:                 /* Idle state for clock is a low leveL */
+63:                SSPCON1bits.CKP = 0;
+0028  98C6     BCF SSPCON1, 4, ACCESS
+64:                /* TC77 has max SPI clock of 7MHz, RF has max 8MHz clock. */
+65:                /* Using FOSC / 4 = 16/4 = 4MHz */
+66:                SSPCON1bits.SSPM1 = 0;
+002A  92C6     BCF SSPCON1, 1, ACCESS
+67:                SSPCON1bits.WCOL = 0;
+002C  9EC6     BCF SSPCON1, 7, ACCESS
+68:                SSPCON1bits.SSPEN = 1;
+002E  8AC6     BSF SSPCON1, 5, ACCESS
+69:            
+70:                WDTCONbits.SWDTEN = 1;
+0030  80D1     BSF WDTCON, 0, ACCESS
+71:            
+72:                EECON1bits.EEPGD = 0;
+0032  9EA6     BCF EECON1, 7, ACCESS
+73:                EECON1bits.CFGS = 0;
+0034  9CA6     BCF EECON1, 6, ACCESS
+74:                EEADR = 0;
+0036  6AA9     CLRF EEADR, ACCESS
+75:            #if defined(PROGRAM_EEPROM_ID)
+76:                EECON1bits.WREN = 1;
+0038  84A6     BSF EECON1, 2, ACCESS
+77:            
+78:                EEDATA = PROGRAM_EEPROM_ID;
+003A  0E51     MOVLW 0x51
+003C  6EA8     MOVWF EEDATA, ACCESS
+79:                EECON2 = 0x55;
+003E  0E55     MOVLW 0x55
+0040  6EA7     MOVWF EECON2, ACCESS
+80:                EECON2 = 0xaa;
+0042  0EAA     MOVLW 0xAA
+0044  6EA7     MOVWF EECON2, ACCESS
+81:                EECON1bits.WR = 1;
+0046  82A6     BSF EECON1, 1, ACCESS
+82:                while (EECON1bits.WR);
+0048  B2A6     BTFSC EECON1, 1, ACCESS
+004A  D7FE     BRA 0x48
+83:                PIR2bits.EEIF = 0;
+004C  98A1     BCF PIR2, 4, ACCESS
+84:                EECON1bits.WREN = 0;
+004E  94A6     BCF EECON1, 2, ACCESS
+85:            #endif
+86:                EECON1bits.RD = 1;
+0050  80A6     BSF EECON1, 0, ACCESS
+87:                while(EECON1bits.RD);
+0052  B0A6     BTFSC EECON1, 0, ACCESS
+0054  D7FE     BRA 0x52
+88:                _id = EEDATA;
+0056  CFA8     MOVFF EEDATA, _id
+0058  F0BA     NOP
+89:            
+90:                rf_init();
+005A  D896     RCALL rf_init
+91:            
+92:                while (1) {
+00A6  D7DA     BRA 0x5C
+93:                    rf_mode(RF_POWERON); /* 8mA for TWS-BS */
+005C  6AE6     CLRF POSTINC1, ACCESS
+005E  D896     RCALL rf_mode
+0060  52E5     MOVF POSTDEC1, F, ACCESS
+94:            
+95:                    do {
+96:                        t = tc77_read_temp();
+0062  D84A     RCALL tc77_read_temp
+0064  CFF3     MOVFF PRODL, POSTINC2
+0066  FFDE     NOP
+0068  CFF4     MOVFF PRODH, POSTDEC2
+006A  FFDD     NOP
+97:                    } while (t == TC77_NOT_READY);
+006C  CFD9     MOVFF FSR2L, FSR0L
+006E  FFE9     NOP
+0070  CFDA     MOVFF FSR2H, FSR0H
+0072  FFEA     NOP
+0074  50EE     MOVF POSTINC0, W, ACCESS
+0076  E102     BNZ 0x7C
+0078  0E80     MOVLW 0x80
+007A  18ED     XORWF POSTDEC0, W, ACCESS
+007C  E0F2     BZ 0x62
+98:            
+99:                    rf_send_temp(t);
+007E  CFDE     MOVFF POSTINC2, POSTINC1
+0080  FFE6     NOP
+0082  CFDD     MOVFF POSTDEC2, POSTINC1
+0084  FFE6     NOP
+0086  D8B1     RCALL rf_send_temp
+0088  52E5     MOVF POSTDEC1, F, ACCESS
+008A  52E5     MOVF POSTDEC1, F, ACCESS
+100:           
+101:                   tc77_mode(TC77_SHUTDOWN); /* 0.1uA when in shutdown mode */
+008C  0E01     MOVLW 0x1
+008E  6EE6     MOVWF POSTINC1, ACCESS
+0090  D815     RCALL tc77_mode
+0092  52E5     MOVF POSTDEC1, F, ACCESS
+102:                   rf_mode(RF_SHUTDOWN);
+0094  0E01     MOVLW 0x1
+0096  6EE6     MOVWF POSTINC1, ACCESS
+0098  D879     RCALL rf_mode
+009A  52E5     MOVF POSTDEC1, F, ACCESS
+103:           
+104:                   Sleep(); /* WDT wakes us after ~65s */
+009C  0003     SLEEP
+105:           
+106:                   tc77_mode(TC77_CONTCONV); /* 250uA in continuous conversion mode */
+009E  6AE6     CLRF POSTINC1, ACCESS
+00A0  D80D     RCALL tc77_mode
+00A2  52E5     MOVF POSTDEC1, F, ACCESS
+107:                   /* it takes 300..400ms for first temperature conversion */
+108:           
+109:                   /* TODO: setup timer */
+110:           
+111:                   Sleep(); /* timer1 wakes us after 500ms */
+00A4  0003     SLEEP
+112:               }
+113:           }
+00A8  0E02     MOVLW 0x2
+00AA  5CE1     SUBWF FSR1L, W, ACCESS
+00AC  E202     BC 0xB2
+00AE  6AE1     CLRF FSR1L, ACCESS
+00B0  52E5     MOVF POSTDEC1, F, ACCESS
+00B2  6EE1     MOVWF FSR1L, ACCESS
+00B4  52E5     MOVF POSTDEC1, F, ACCESS
+00B6  CFE7     MOVFF INDF1, FSR2L
+00B8  FFD9     NOP
+00BA  0012     RETURN 0
+114:           
+115:           void tc77_mode(unsigned char shutdown)
+00BC  CFD9     MOVFF FSR2L, POSTINC1
+00BE  FFE6     NOP
+00C0  CFE1     MOVFF FSR1L, FSR2L
+00C2  FFD9     NOP
+116:           {
+117:               CS_TEMPERATURE = 0;
+00C4  9682     BCF PORTC, 3, ACCESS
+118:           
+119:               SSPBUF = 0;
+00C6  6AC9     CLRF SSPBUF, ACCESS
+120:               while (!SSPSTATbits.BF);
+00C8  A0C7     BTFSS SSPSTAT, 0, ACCESS
+00CA  D7FE     BRA 0xC8
+121:               SSPBUF = 0;
+00CC  6AC9     CLRF SSPBUF, ACCESS
+122:               while (!SSPSTATbits.BF);
+00CE  A0C7     BTFSS SSPSTAT, 0, ACCESS
+00D0  D7FE     BRA 0xCE
+123:           
+124:               /* write 16 bits of '1' for shutdown mode, '0' for cont conv mode */
+125:               TRISBbits.TRISB4 = 0;
+00D2  9893     BCF TRISB, 4, ACCESS
+126:               PORTBbits.RB4 = shutdown;
+00D4  0EFE     MOVLW 0xFE
+00D6  50DB     MOVF PLUSW2, W, ACCESS
+00D8  B0E8     BTFSC WREG, 0, ACCESS
+00DA  8881     BSF PORTB, 4, ACCESS
+00DC  A0E8     BTFSS WREG, 0, ACCESS
+00DE  9881     BCF PORTB, 4, ACCESS
+127:           
+128:               SSPBUF = 0;
+00E0  6AC9     CLRF SSPBUF, ACCESS
+129:               while (!SSPSTATbits.BF);
+00E2  A0C7     BTFSS SSPSTAT, 0, ACCESS
+00E4  D7FE     BRA 0xE2
+130:               SSPBUF = 0;
+00E6  6AC9     CLRF SSPBUF, ACCESS
+131:               while (!SSPSTATbits.BF);
+00E8  A0C7     BTFSS SSPSTAT, 0, ACCESS
+00EA  D7FE     BRA 0xE8
+132:           
+133:               CS_TEMPERATURE = 1;
+00EC  8682     BSF PORTC, 3, ACCESS
+134:               TRISBbits.TRISB4 = 1;
+00EE  8893     BSF TRISB, 4, ACCESS
+135:           }
+00F0  52E5     MOVF POSTDEC1, F, ACCESS
+00F2  CFE7     MOVFF INDF1, FSR2L
+00F4  FFD9     NOP
+00F6  0012     RETURN 0
+136:           
+137:           /*
+138:            * Return temperature in 0.0625 celsius degrees,
+139:            * multiply returned value by 0.0625 to get the temperature in c deg.
+140:            */
+141:           int tc77_read_temp(void)
+00F8  CFD9     MOVFF FSR2L, POSTINC1
+00FA  FFE6     NOP
+00FC  CFE1     MOVFF FSR1L, FSR2L
+00FE  FFD9     NOP
+0100  0E03     MOVLW 0x3
+0102  26E1     ADDWF FSR1L, F, ACCESS
+142:           {
+143:               unsigned int t;
+144:               unsigned char l;
+145:               
+146:               CS_TEMPERATURE = 0;
+0104  9682     BCF PORTC, 3, ACCESS
+147:           
+148:               SSPBUF = 0;
+0106  6AC9     CLRF SSPBUF, ACCESS
+149:               while (!SSPSTATbits.BF);
+0108  A0C7     BTFSS SSPSTAT, 0, ACCESS
+010A  D7FE     BRA 0x108
+150:               t = SSPBUF;
+010C  50C9     MOVF SSPBUF, W, ACCESS
+010E  6EDE     MOVWF POSTINC2, ACCESS
+0110  6ADD     CLRF POSTDEC2, ACCESS
+151:           
+152:               SSPBUF = 0;
+0112  6AC9     CLRF SSPBUF, ACCESS
+153:               while (!SSPSTATbits.BF);
+0114  A0C7     BTFSS SSPSTAT, 0, ACCESS
+0116  D7FE     BRA 0x114
+154:               l = SSPBUF;
+0118  0E02     MOVLW 0x2
+011A  CFC9     MOVFF SSPBUF, PLUSW2
+011C  FFDB     NOP
+155:           
+156:               if (!(l & 4)) {
+011E  B4DB     BTFSC PLUSW2, 2, ACCESS
+0120  D005     BRA 0x12C
+157:                   /* conversion not done after powerup/reset */
+158:                   CS_TEMPERATURE = 1;
+0122  8682     BSF PORTC, 3, ACCESS
+159:                   return TC77_NOT_READY;
+0124  6AF3     CLRF PRODL, ACCESS
+0126  0E80     MOVLW 0x80
+0128  6EF4     MOVWF PRODH, ACCESS
+012A  D024     BRA 0x174
+160:               }
+161:           
+162:               t <<= 5;
+012C  CFD9     MOVFF FSR2L, FSR0L
+012E  FFE9     NOP
+0130  CFDA     MOVFF FSR2H, FSR0H
+0132  FFEA     NOP
+0134  0E05     MOVLW 0x5
+0136  90D8     BCF STATUS, 0, ACCESS
+0138  36EE     RLCF POSTINC0, F, ACCESS
+013A  36ED     RLCF POSTDEC0, F, ACCESS
+013C  06E8     DECF WREG, F, ACCESS
+013E  E1FB     BNZ 0x136
+163:               t |= (l >> 3);
+0140  0E02     MOVLW 0x2
+0142  40DB     RRNCF PLUSW2, W, ACCESS
+0144  40E8     RRNCF WREG, W, ACCESS
+0146  40E8     RRNCF WREG, W, ACCESS
+0148  0B1F     ANDLW 0x1F
+014A  12DF     IORWF INDF2, F, ACCESS
+164:           
+165:               if (t & 0x1000)
+014C  0E01     MOVLW 0x1
+014E  50DB     MOVF PLUSW2, W, ACCESS
+0150  0B10     ANDLW 0x10
+0152  E007     BZ 0x162
+166:                   t |= 0xe000;
+0154  CFD9     MOVFF FSR2L, FSR0L
+0156  FFE9     NOP
+0158  CFDA     MOVFF FSR2H, FSR0H
+015A  FFEA     NOP
+015C  52EE     MOVF POSTINC0, F, ACCESS
+015E  0EE0     MOVLW 0xE0
+0160  12ED     IORWF POSTDEC0, F, ACCESS
+167:           
+168:               CS_TEMPERATURE = 1;
+0162  8682     BSF PORTC, 3, ACCESS
+169:           
+170:               return (int)t;
+0164  CFDE     MOVFF POSTINC2, __tmp_0
+0166  F002     NOP
+0168  CFDD     MOVFF POSTDEC2, 0x3
+016A  F003     NOP
+016C  C002     MOVFF __tmp_0, PRODL
+016E  FFF3     NOP
+0170  C003     MOVFF 0x3, PRODH
+0172  FFF4     NOP
+171:           }
+0174  0E03     MOVLW 0x3
+0176  5CE1     SUBWF FSR1L, W, ACCESS
+0178  E202     BC 0x17E
+017A  6AE1     CLRF FSR1L, ACCESS
+017C  52E5     MOVF POSTDEC1, F, ACCESS
+017E  6EE1     MOVWF FSR1L, ACCESS
+0180  52E5     MOVF POSTDEC1, F, ACCESS
+0182  CFE7     MOVFF INDF1, FSR2L
+0184  FFD9     NOP
+0186  0012     RETURN 0
+172:           
+173:           #ifdef RF2400
+174:           
+175:           void rf_init(void)
+176:           {
+177:               
+178:           }
+179:           
+180:           void rf_mode(unsigned char shutdown)
+181:           {
+182:           
+183:           }
+184:           
+185:           void rf_send_temp(int t)
+186:           {
+187:           
+188:           }
+189:           
+190:           #else
+191:           
+192:           /* TWS-BS style RF transmitter */
+193:           
+194:           void rf_init(void)
+195:           {
+196:               RF_CE = 0; /* power off by default */
+0188  9882     BCF PORTC, 4, ACCESS
+197:           }
+018A  0012     RETURN 0
+198:           
+199:           void rf_mode(unsigned char shutdown)
+018C  CFD9     MOVFF FSR2L, POSTINC1
+018E  FFE6     NOP
+0190  CFE1     MOVFF FSR1L, FSR2L
+0192  FFD9     NOP
+200:           {
+201:               RF_CE = shutdown == RF_SHUTDOWN ? 0 : 1;
+0194  0EFE     MOVLW 0xFE
+0196  04DB     DECF PLUSW2, W, ACCESS
+0198  E102     BNZ 0x19E
+019A  0E00     MOVLW 0x0
+019C  D001     BRA 0x1A0
+019E  0E01     MOVLW 0x1
+01A0  B0E8     BTFSC WREG, 0, ACCESS
+01A2  8882     BSF PORTC, 4, ACCESS
+01A4  A0E8     BTFSS WREG, 0, ACCESS
+01A6  9882     BCF PORTC, 4, ACCESS
+202:           }
+01A8  52E5     MOVF POSTDEC1, F, ACCESS
+01AA  CFE7     MOVFF INDF1, FSR2L
+01AC  FFD9     NOP
+01AE  0012     RETURN 0
+203:           
+204:           void rf_send(unsigned char* buf, unsigned char l)
+01B0  CFD9     MOVFF FSR2L, POSTINC1
+01B2  FFE6     NOP
+01B4  CFE1     MOVFF FSR1L, FSR2L
+01B6  FFD9     NOP
+01B8  52E6     MOVF POSTINC1, F, ACCESS
+205:           {
+206:               while (l-- > 0) {
+01BA  0EFC     MOVLW 0xFC
+01BC  CFDB     MOVFF PLUSW2, PRODL
+01BE  FFF3     NOP
+01C0  06DB     DECF PLUSW2, F, ACCESS
+01C2  50F3     MOVF PRODL, W, ACCESS
+01C4  0800     SUBLW 0x0
+01C6  E20C     BC 0x1E0
+01DE  D7ED     BRA 0x1BA
+207:                   char b = *buf++;
+01C8  0EFD     MOVLW 0xFD
+01CA  CFDB     MOVFF PLUSW2, FSR0L
+01CC  FFE9     NOP
+01CE  2ADB     INCF PLUSW2, F, ACCESS
+01D0  0EFE     MOVLW 0xFE
+01D2  CFDB     MOVFF PLUSW2, FSR0H
+01D4  FFEA     NOP
+01D6  E301     BNC 0x1DA
+01D8  2ADB     INCF PLUSW2, F, ACCESS
+01DA  CFEF     MOVFF INDF0, INDF2
+01DC  FFDF     NOP
+208:               }
+209:           }
+01E0  52E5     MOVF POSTDEC1, F, ACCESS
+01E2  52E5     MOVF POSTDEC1, F, ACCESS
+01E4  CFE7     MOVFF INDF1, FSR2L
+01E6  FFD9     NOP
+01E8  0012     RETURN 0
+210:           
+211:           void rf_send_temp(int t)
+01EA  CFD9     MOVFF FSR2L, POSTINC1
+01EC  FFE6     NOP
+01EE  CFE1     MOVFF FSR1L, FSR2L
+01F0  FFD9     NOP
+212:           {
+213:               static unsigned char buf[8];
+214:           
+215:               buf[0] = 0xaa;
+01F2  0100     MOVLB 0x0
+01F4  0EAA     MOVLW 0xAA
+01F6  6FBB     MOVWF buf, BANKED
+216:               buf[1] = 0xaa;
+01F8  6FBC     MOVWF 0xBC, BANKED
+217:               buf[2] = 0x00;
+01FA  6BBD     CLRF 0xBD, BANKED
+218:               buf[3] = t >> 8;
+01FC  0EFE     MOVLW 0xFE
+01FE  CFDB     MOVFF PLUSW2, 0x3
+0200  F003     NOP
+0202  C003     MOVFF 0x3, __tmp_0
+0204  F002     NOP
+0206  6A03     CLRF 0x3, ACCESS
+0208  C002     MOVFF __tmp_0, 0xBE
+020A  F0BE     NOP
+219:               buf[4] = t & 0xff;
+020C  0EFF     MOVLW 0xFF
+020E  6EE7     MOVWF INDF1, ACCESS
+0210  0EFD     MOVLW 0xFD
+0212  CFDB     MOVFF PLUSW2, __tmp_0
+0214  F002     NOP
+0216  50E7     MOVF INDF1, W, ACCESS
+0218  1602     ANDWF __tmp_0, F, ACCESS
+021A  6A03     CLRF 0x3, ACCESS
+021C  C002     MOVFF __tmp_0, 0xBF
+021E  F0BF     NOP
+220:               buf[5] = _id;
+0220  C0BA     MOVFF _id, 0xC0
+0222  F0C0     NOP
+221:               buf[6] = buf[3] ^ buf[4] ^ buf[5];
+0224  51BE     MOVF 0xBE, W, BANKED
+0226  1802     XORWF __tmp_0, W, ACCESS
+0228  19C0     XORWF 0xC0, W, BANKED
+022A  6FC1     MOVWF 0xC1, BANKED
+222:               buf[7] = 0;
+022C  6BC2     CLRF 0xC2, BANKED
+223:           
+224:               rf_send(buf, 8);
+022E  0E08     MOVLW 0x8
+0230  6EE6     MOVWF POSTINC1, ACCESS
+0232  0EBB     MOVLW 0xBB
+0234  6EE6     MOVWF POSTINC1, ACCESS
+0236  0E00     MOVLW 0x0
+0238  6EE6     MOVWF POSTINC1, ACCESS
+023A  DFBA     RCALL rf_send
+023C  52E5     MOVF POSTDEC1, F, ACCESS
+023E  52E5     MOVF POSTDEC1, F, ACCESS
+0240  52E5     MOVF POSTDEC1, F, ACCESS
+225:           }
+0242  52E5     MOVF POSTDEC1, F, ACCESS
+0244  CFE7     MOVFF INDF1, FSR2L
+0246  FFD9     NOP
+0248  0012     RETURN 0
+226:           
+227:           #endif
+---  C:/MCC18/src/traditional/stdclib/__init.c  ---------------------------------------------------------
+1:             
+2:             /** @name __init
+3:              * The {\bf __init} is called if the linker can not find a
+4:              * user defined version for it
+5:              */
+6:             
+7:             void __init (void)
+8:             {
+9:             }
+0324  0012     RETURN 0
+10:            
+---  C:/MCC18/src/traditional/startup/c018i.c  ----------------------------------------------------------
+1:             /* $Id: c018i.c,v 1.7 2006/11/15 22:53:12 moshtaa Exp $ */
+2:             
+3:             /* Copyright (c)1999 Microchip Technology */
+4:             
+5:             /* MPLAB-C18 startup code, including initialized data */
+6:             
+7:             /* external reference to __init() function */
+8:             extern void __init (void);
+9:             /* external reference to the user's main routine */
+10:            extern void main (void);
+11:            /* prototype for the startup function */
+12:            void _entry (void);
+13:            void _startup (void);
+14:            /* prototype for the initialized data setup */
+15:            void _do_cinit (void);
+16:            
+17:            extern volatile near unsigned long short TBLPTR;
+18:            extern near unsigned FSR0;
+19:            extern near char __FPFLAGS;
+20:            #define RND 6
+21:            
+22:            #pragma code _entry_scn=0x000000
+23:            void
+24:            _entry (void)
+25:            {
+26:            _asm goto _startup _endasm
+0000  EF84     GOTO 0x308
+0002  F001     NOP
+27:            
+28:            }
+0004  0012     RETURN 0
+29:            #pragma code _startup_scn
+30:            void
+31:            _startup (void)
+32:            {
+33:              _asm
+34:                // Initialize the stack pointer
+35:                lfsr 1, _stack
+0308  EE10     LFSR 1, 0x60
+030A  F060     NOP
+36:                lfsr 2, _stack
+030C  EE20     LFSR 2, 0x60
+030E  F060     NOP
+37:            
+38:                clrf TBLPTRU, 0 // 1st silicon doesn't do this on POR
+0310  6AF8     CLRF TBLPTRU, ACCESS
+39:            
+40:                bcf __FPFLAGS,RND,0 // Initialize rounding flag for floating point libs
+0312  9C01     BCF 0x1, 6, ACCESS
+41:                
+42:                _endasm 
+43:                _do_cinit ();
+0314  EC25     CALL 0x24A, 0
+0316  F001     NOP
+44:            
+45:            loop:
+46:            
+47:              // If user defined __init is not found, the one in clib.lib will be used
+48:              __init ();
+0318  EC92     CALL 0x324, 0
+031A  F001     NOP
+49:            
+50:              // Call the user's main routine
+51:              main ();
+031C  EC04     CALL 0x8, 0
+031E  F000     NOP
+52:            
+53:              goto loop;
+0320  D7FB     BRA 0x318
+54:            }                               /* end _startup() */
+0322  0012     RETURN 0
+55:            
+56:            /* MPLAB-C18 initialized data memory support */
+57:            /* The linker will populate the _cinit table */
+58:            extern far rom struct
+59:            {
+60:              unsigned short num_init;
+61:              struct _init_entry
+62:              {
+63:                unsigned long from;
+64:                unsigned long to;
+65:                unsigned long size;
+66:              }
+67:              entries[];
+68:            }
+69:            _cinit;
+70:            
+71:            #pragma code _cinit_scn
+72:            void
+73:            _do_cinit (void)
+74:            {
+75:              /* we'll make the assumption in the following code that these statics
+76:               * will be allocated into the same bank.
+77:               */
+78:              static short long prom;
+79:              static unsigned short curr_byte;
+80:              static unsigned short curr_entry;
+81:              static short long data_ptr;
+82:            
+83:              // Initialized data...
+84:              TBLPTR = (short long)&_cinit;
+024A  0E06     MOVLW 0x6
+024C  6EF6     MOVWF TBLPTRL, ACCESS
+024E  0E00     MOVLW 0x0
+0250  6EF7     MOVWF TBLPTRH, ACCESS
+0252  0E00     MOVLW 0x0
+0254  6EF8     MOVWF TBLPTRU, ACCESS
+85:              _asm
+86:                movlb data_ptr
+0256  0100     MOVLB 0x0
+87:                tblrdpostinc
+0258  0009     TBLRD*+
+88:                movf TABLAT, 0, 0
+025A  50F5     MOVF TABLAT, W, ACCESS
+89:                movwf curr_entry, 1
+025C  6FB5     MOVWF curr_entry, BANKED
+90:                tblrdpostinc
+025E  0009     TBLRD*+
+91:                movf TABLAT, 0, 0
+0260  50F5     MOVF TABLAT, W, ACCESS
+92:                movwf curr_entry+1, 1
+0262  6FB6     MOVWF 0xB6, BANKED
+93:              _endasm
+94:                //while (curr_entry)
+95:                //{
+96:                test:
+97:                _asm
+98:                 bnz 3
+0264  E103     BNZ 0x26C
+99:                tstfsz curr_entry, 1
+0266  67B5     TSTFSZ curr_entry, BANKED
+100:               bra 1
+0268  D001     BRA 0x26C
+101:               _endasm
+102:               goto done;
+026A  D03D     BRA 0x2E6
+103:                 /* Count down so we only have to look up the data in _cinit
+104:                  * once.
+105:                  *
+106:                  * At this point we know that TBLPTR points to the top of the current
+107:                  * entry in _cinit, so we can just start reading the from, to, and
+108:                  * size values.
+109:                  */
+110:                 _asm
+111:           	/* read the source address */
+112:           	tblrdpostinc
+026C  0009     TBLRD*+
+113:           	movf TABLAT, 0, 0
+026E  50F5     MOVF TABLAT, W, ACCESS
+114:           	movwf prom, 1
+0270  6FB0     MOVWF prom, BANKED
+115:           	tblrdpostinc
+0272  0009     TBLRD*+
+116:           	movf TABLAT, 0, 0
+0274  50F5     MOVF TABLAT, W, ACCESS
+117:           	movwf prom+1, 1
+0276  6FB1     MOVWF 0xB1, BANKED
+118:           	tblrdpostinc
+0278  0009     TBLRD*+
+119:           	movf TABLAT, 0, 0
+027A  50F5     MOVF TABLAT, W, ACCESS
+120:           	movwf prom+2, 1
+027C  6FB2     MOVWF 0xB2, BANKED
+121:           	/* skip a byte since it's stored as a 32bit int */
+122:           	tblrdpostinc
+027E  0009     TBLRD*+
+123:           	/* read the destination address directly into FSR0 */
+124:           	tblrdpostinc
+0280  0009     TBLRD*+
+125:           	movf TABLAT, 0, 0
+0282  50F5     MOVF TABLAT, W, ACCESS
+126:           	movwf FSR0L, 0
+0284  6EE9     MOVWF FSR0L, ACCESS
+127:           	tblrdpostinc
+0286  0009     TBLRD*+
+128:           	movf TABLAT, 0, 0
+0288  50F5     MOVF TABLAT, W, ACCESS
+129:           	movwf FSR0H, 0
+028A  6EEA     MOVWF FSR0H, ACCESS
+130:           	/* skip two bytes since it's stored as a 32bit int */
+131:           	tblrdpostinc
+028C  0009     TBLRD*+
+132:           	tblrdpostinc
+028E  0009     TBLRD*+
+133:           	/* read the destination address directly into FSR0 */
+134:           	tblrdpostinc
+0290  0009     TBLRD*+
+135:           	movf TABLAT, 0, 0
+0292  50F5     MOVF TABLAT, W, ACCESS
+136:           	movwf curr_byte, 1
+0294  6FB3     MOVWF curr_byte, BANKED
+137:           	tblrdpostinc
+0296  0009     TBLRD*+
+138:           	movf TABLAT, 0, 0
+0298  50F5     MOVF TABLAT, W, ACCESS
+139:           	movwf curr_byte+1, 1
+029A  6FB4     MOVWF 0xB4, BANKED
+140:           	/* skip two bytes since it's stored as a 32bit int */
+141:           	tblrdpostinc
+029C  0009     TBLRD*+
+142:           	tblrdpostinc
+029E  0009     TBLRD*+
+143:                 _endasm  
+144:                 //prom = data_ptr->from;
+145:                 //FSR0 = data_ptr->to;
+146:                 //curr_byte = (unsigned short) data_ptr->size;
+147:                 /* the table pointer now points to the next entry. Save it
+148:                  * off since we'll be using the table pointer to do the copying
+149:                  * for the entry.
+150:                  */
+151:                 data_ptr = TBLPTR;
+02A0  CFF6     MOVFF TBLPTRL, data_ptr
+02A2  F0B7     NOP
+02A4  CFF7     MOVFF TBLPTRH, 0xB8
+02A6  F0B8     NOP
+02A8  CFF8     MOVFF TBLPTRU, 0xB9
+02AA  F0B9     NOP
+152:                 
+153:                 /* now assign the source address to the table pointer */
+154:                 TBLPTR = prom;
+02AC  C0B0     MOVFF prom, TBLPTRL
+02AE  FFF6     NOP
+02B0  C0B1     MOVFF 0xB1, TBLPTRH
+02B2  FFF7     NOP
+02B4  C0B2     MOVFF 0xB2, TBLPTRU
+02B6  FFF8     NOP
+155:           
+156:                 /* do the copy loop */
+157:                 _asm
+158:                   // determine if we have any more bytes to copy
+159:           	movlb curr_byte
+02B8  0100     MOVLB 0x0
+160:           	movf curr_byte, 1, 1
+02BA  53B3     MOVF curr_byte, F, BANKED
+161:           copy_loop:
+162:           	bnz 2 // copy_one_byte
+02BC  E102     BNZ 0x2C2
+163:           	movf curr_byte + 1, 1, 1
+02BE  53B4     MOVF 0xB4, F, BANKED
+164:           	bz 7 // done_copying
+02C0  E007     BZ 0x2D0
+165:           
+166:           copy_one_byte:
+167:           	tblrdpostinc
+02C2  0009     TBLRD*+
+168:           	movf TABLAT, 0, 0
+02C4  50F5     MOVF TABLAT, W, ACCESS
+169:           	movwf POSTINC0, 0
+02C6  6EEE     MOVWF POSTINC0, ACCESS
+170:           
+171:           	// decrement byte counter
+172:           	decf curr_byte, 1, 1
+02C8  07B3     DECF curr_byte, F, BANKED
+173:           	bc -8 // copy_loop
+02CA  E2F8     BC 0x2BC
+174:                   decf curr_byte + 1, 1, 1
+02CC  07B4     DECF 0xB4, F, BANKED
+175:           	bra -7 // copy_one_byte
+02CE  D7F9     BRA 0x2C2
+176:           
+177:           done_copying:
+178:           
+179:                 _endasm
+180:                 /* restore the table pointer for the next entry */
+181:                 TBLPTR = data_ptr;
+02D0  C0B7     MOVFF data_ptr, TBLPTRL
+02D2  FFF6     NOP
+02D4  C0B8     MOVFF 0xB8, TBLPTRH
+02D6  FFF7     NOP
+02D8  C0B9     MOVFF 0xB9, TBLPTRU
+02DA  FFF8     NOP
+182:                 /* next entry... */
+183:                 curr_entry--;
+02DC  0100     MOVLB 0x0
+02DE  07B5     DECF curr_entry, F, BANKED
+02E0  0E00     MOVLW 0x0
+02E2  5BB6     SUBWFB 0xB6, F, BANKED
+184:                 goto test;
+02E4  D7BF     BRA 0x264
+185:           done:
+186:           ;
+187:           }
+02E6  0012     RETURN 0
+---  C:/MCC18/src/traditional/proc/p18F13K22.asm  -------------------------------------------------------
+                                                  1:             LIST P=18F13K22
+                                                  2:             NOLIST
+                                                  3:     ;-------------------------------------------------------------------------
+                                                  4:     ; MPLAB-Cxx  PIC18F13K22 processor definition module
+                                                  5:     ; 
+                                                  6:     ; (c) Copyright 1999-2009 Microchip Technology, All rights reserved
+                                                  7:     ;-------------------------------------------------------------------------
+                                                  8:     
+                                                  9:     SFR_UNBANKED0       UDATA_ACS H'F68'
+                                                  10:    
+                                                  11:    SRCON0              
+                                                  12:    SRCON0bits          RES 1     ; 0xF68
+                                                  13:    SRCON1              
+                                                  14:    SRCON1bits          RES 1     ; 0xF69
+                                                  15:                        RES 1
+                                                  16:    CM2CON0             
+                                                  17:    CM2CON0bits         RES 1     ; 0xF6B
+                                                  18:    CM2CON1             
+                                                  19:    CM2CON1bits         RES 1     ; 0xF6C
+                                                  20:    CM1CON0             
+                                                  21:    CM1CON0bits         RES 1     ; 0xF6D
+                                                  22:                        RES 1
+                                                  23:    SSPMSK              
+                                                  24:    SSPMSKbits          RES 1     ; 0xF6F
+                                                  25:                        RES 5
+                                                  26:    APFCON              
+                                                  27:    APFCONbits          RES 1     ; 0xF75
+                                                  28:    SLRCON              
+                                                  29:    SLRCONbits          RES 1     ; 0xF76
+                                                  30:    WPUA                
+                                                  31:    WPUAbits            RES 1     ; 0xF77
+                                                  32:    WPUB                
+                                                  33:    WPUBbits            RES 1     ; 0xF78
+                                                  34:    IOCA                
+                                                  35:    IOCAbits            RES 1     ; 0xF79
+                                                  36:    IOCB                
+                                                  37:    IOCBbits            RES 1     ; 0xF7A
+                                                  38:                        RES 3
+                                                  39:    ANSEL               
+                                                  40:    ANSELbits           RES 1     ; 0xF7E
+                                                  41:    ANSELH              
+                                                  42:    ANSELHbits          RES 1     ; 0xF7F
+                                                  43:    PORTA               
+                                                  44:    PORTAbits           RES 1     ; 0xF80
+                                                  45:    PORTB               
+                                                  46:    PORTBbits           RES 1     ; 0xF81
+                                                  47:    PORTC               
+                                                  48:    PORTCbits           RES 1     ; 0xF82
+                                                  49:                        RES 6
+                                                  50:    LATA                
+                                                  51:    LATAbits            RES 1     ; 0xF89
+                                                  52:    LATB                
+                                                  53:    LATBbits            RES 1     ; 0xF8A
+                                                  54:    LATC                
+                                                  55:    LATCbits            RES 1     ; 0xF8B
+                                                  56:                        RES 6
+                                                  57:    DDRA                
+                                                  58:    DDRAbits            
+                                                  59:    TRISA               
+                                                  60:    TRISAbits           RES 1     ; 0xF92
+                                                  61:    DDRB                
+                                                  62:    DDRBbits            
+                                                  63:    TRISB               
+                                                  64:    TRISBbits           RES 1     ; 0xF93
+                                                  65:    DDRC                
+                                                  66:    DDRCbits            
+                                                  67:    TRISC               
+                                                  68:    TRISCbits           RES 1     ; 0xF94
+                                                  69:                        RES 6
+                                                  70:    OSCTUNE             
+                                                  71:    OSCTUNEbits         RES 1     ; 0xF9B
+                                                  72:                        RES 1
+                                                  73:    PIE1                
+                                                  74:    PIE1bits            RES 1     ; 0xF9D
+                                                  75:    PIR1                
+                                                  76:    PIR1bits            RES 1     ; 0xF9E
+                                                  77:    IPR1                
+                                                  78:    IPR1bits            RES 1     ; 0xF9F
+                                                  79:    PIE2                
+                                                  80:    PIE2bits            RES 1     ; 0xFA0
+                                                  81:    PIR2                
+                                                  82:    PIR2bits            RES 1     ; 0xFA1
+                                                  83:    IPR2                
+                                                  84:    IPR2bits            RES 1     ; 0xFA2
+                                                  85:                        RES 3
+                                                  86:    EECON1              
+                                                  87:    EECON1bits          RES 1     ; 0xFA6
+                                                  88:    EECON2              RES 1     ; 0xFA7
+                                                  89:    EEDATA              RES 1     ; 0xFA8
+                                                  90:    EEADR               
+                                                  91:    EEADRbits           RES 1     ; 0xFA9
+                                                  92:    EEADRH              
+                                                  93:    EEADRHbits          RES 1     ; 0xFAA
+                                                  94:    RCSTA               
+                                                  95:    RCSTAbits           RES 1     ; 0xFAB
+                                                  96:    TXSTA               
+                                                  97:    TXSTAbits           RES 1     ; 0xFAC
+                                                  98:    TXREG               RES 1     ; 0xFAD
+                                                  99:    RCREG               RES 1     ; 0xFAE
+                                                  100:   SPBRG               RES 1     ; 0xFAF
+                                                  101:   SPBRGH              RES 1     ; 0xFB0
+                                                  102:   T3CON               
+                                                  103:   T3CONbits           RES 1     ; 0xFB1
+                                                  104:   TMR3L               RES 1     ; 0xFB2
+                                                  105:   TMR3H               RES 1     ; 0xFB3
+                                                  106:                       RES 2
+                                                  107:   ECCP1AS             
+                                                  108:   ECCP1ASbits         RES 1     ; 0xFB6
+                                                  109:   PWM1CON             
+                                                  110:   PWM1CONbits         RES 1     ; 0xFB7
+                                                  111:   BAUDCON             
+                                                  112:   BAUDCONbits         
+                                                  113:   BAUDCTL             
+                                                  114:   BAUDCTLbits         RES 1     ; 0xFB8
+                                                  115:   PSTRCON             
+                                                  116:   PSTRCONbits         RES 1     ; 0xFB9
+                                                  117:   VREFCON0            
+                                                  118:   VREFCON0bits        RES 1     ; 0xFBA
+                                                  119:   VREFCON1            
+                                                  120:   VREFCON1bits        RES 1     ; 0xFBB
+                                                  121:   VREFCON2            
+                                                  122:   VREFCON2bits        RES 1     ; 0xFBC
+                                                  123:   CCP1CON             
+                                                  124:   CCP1CONbits         RES 1     ; 0xFBD
+                                                  125:   CCPR1               
+                                                  126:   CCPR1L              RES 1     ; 0xFBE
+                                                  127:   CCPR1H              RES 1     ; 0xFBF
+                                                  128:   ADCON2              
+                                                  129:   ADCON2bits          RES 1     ; 0xFC0
+                                                  130:   ADCON1              
+                                                  131:   ADCON1bits          RES 1     ; 0xFC1
+                                                  132:   ADCON0              
+                                                  133:   ADCON0bits          RES 1     ; 0xFC2
+                                                  134:   ADRES               
+                                                  135:   ADRESL              RES 1     ; 0xFC3
+                                                  136:   ADRESH              RES 1     ; 0xFC4
+                                                  137:   SSPCON2             
+                                                  138:   SSPCON2bits         RES 1     ; 0xFC5
+                                                  139:   SSPCON1             
+                                                  140:   SSPCON1bits         RES 1     ; 0xFC6
+                                                  141:   SSPSTAT             
+                                                  142:   SSPSTATbits         RES 1     ; 0xFC7
+                                                  143:   SSPADD              RES 1     ; 0xFC8
+                                                  144:   SSPBUF              RES 1     ; 0xFC9
+                                                  145:   T2CON               
+                                                  146:   T2CONbits           RES 1     ; 0xFCA
+                                                  147:   PR2                 RES 1     ; 0xFCB
+                                                  148:   TMR2                RES 1     ; 0xFCC
+                                                  149:   T1CON               
+                                                  150:   T1CONbits           RES 1     ; 0xFCD
+                                                  151:   TMR1L               RES 1     ; 0xFCE
+                                                  152:   TMR1H               RES 1     ; 0xFCF
+                                                  153:   RCON                
+                                                  154:   RCONbits            RES 1     ; 0xFD0
+                                                  155:   WDTCON              
+                                                  156:   WDTCONbits          RES 1     ; 0xFD1
+                                                  157:   OSCCON2             
+                                                  158:   OSCCON2bits         RES 1     ; 0xFD2
+                                                  159:   OSCCON              
+                                                  160:   OSCCONbits          RES 1     ; 0xFD3
+                                                  161:                       RES 1
+                                                  162:   T0CON               
+                                                  163:   T0CONbits           RES 1     ; 0xFD5
+                                                  164:   TMR0L               RES 1     ; 0xFD6
+                                                  165:   TMR0H               RES 1     ; 0xFD7
+                                                  166:   STATUS              
+                                                  167:   STATUSbits          RES 1     ; 0xFD8
+                                                  168:   FSR2                
+                                                  169:   FSR2L               RES 1     ; 0xFD9
+                                                  170:   FSR2H               RES 1     ; 0xFDA
+                                                  171:   PLUSW2              RES 1     ; 0xFDB
+                                                  172:   PREINC2             RES 1     ; 0xFDC
+                                                  173:   POSTDEC2            RES 1     ; 0xFDD
+                                                  174:   POSTINC2            RES 1     ; 0xFDE
+                                                  175:   INDF2               RES 1     ; 0xFDF
+                                                  176:   BSR                 RES 1     ; 0xFE0
+                                                  177:   FSR1                
+                                                  178:   FSR1L               RES 1     ; 0xFE1
+                                                  179:   FSR1H               RES 1     ; 0xFE2
+                                                  180:   PLUSW1              RES 1     ; 0xFE3
+                                                  181:   PREINC1             RES 1     ; 0xFE4
+                                                  182:   POSTDEC1            RES 1     ; 0xFE5
+                                                  183:   POSTINC1            RES 1     ; 0xFE6
+                                                  184:   INDF1               RES 1     ; 0xFE7
+                                                  185:   W                   
+                                                  186:   WREG                RES 1     ; 0xFE8
+                                                  187:   FSR0                
+                                                  188:   FSR0L               RES 1     ; 0xFE9
+                                                  189:   FSR0H               RES 1     ; 0xFEA
+                                                  190:   PLUSW0              RES 1     ; 0xFEB
+                                                  191:   PREINC0             RES 1     ; 0xFEC
+                                                  192:   POSTDEC0            RES 1     ; 0xFED
+                                                  193:   POSTINC0            RES 1     ; 0xFEE
+                                                  194:   INDF0               RES 1     ; 0xFEF
+                                                  195:   INTCON3             
+                                                  196:   INTCON3bits         RES 1     ; 0xFF0
+                                                  197:   INTCON2             
+                                                  198:   INTCON2bits         RES 1     ; 0xFF1
+                                                  199:   INTCON              
+                                                  200:   INTCONbits          RES 1     ; 0xFF2
+                                                  201:   PROD                
+                                                  202:   PRODL               RES 1     ; 0xFF3
+                                                  203:   PRODH               RES 1     ; 0xFF4
+                                                  204:   TABLAT              RES 1     ; 0xFF5
+                                                  205:   TBLPTR              
+                                                  206:   TBLPTRL             RES 1     ; 0xFF6
+                                                  207:   TBLPTRH             RES 1     ; 0xFF7
+                                                  208:   TBLPTRU             RES 1     ; 0xFF8
+                                                  209:   PC                  
+                                                  210:   PCL                 RES 1     ; 0xFF9
+                                                  211:   PCLATH              RES 1     ; 0xFFA
+                                                  212:   PCLATU              RES 1     ; 0xFFB
+                                                  213:   STKPTR              
+                                                  214:   STKPTRbits          RES 1     ; 0xFFC
+                                                  215:   TOS                 
+                                                  216:   TOSL                RES 1     ; 0xFFD
+                                                  217:   TOSH                RES 1     ; 0xFFE
+                                                  218:   TOSU                RES 1     ; 0xFFF
+                                                  219:   
+                                                  220:   
+                                                  221:   ;*** Set all of memory to zeroes ***/
+                                                  222:   ; Use FSR0 to increment through memory from address 0x0
+                                                  223:   ; to the end of the last bank skipping sfrs and
+                                                  224:   ; unimplemented addresses.
+                                                  225:   
+                                                  226:       CODE
+                                                  227:   __zero_memory
+02E8  0E00     MOVLW 0x0                          228:       movlw  0x0       ;low byte of (end address + 1)
+02EA  6EF3     MOVWF PRODL, ACCESS                229:       movwf  PRODL, 0
+02EC  EE00     LFSR 0, 0x0                        230:       lfsr   0, 0x0    ;start address
+02EE  F000     NOP
+02F0  0E01     MOVLW 0x1                          231:       movlw  0x1       ;high byte of (end address + 1)
+02F2  D801     RCALL 0x2F6                        232:       rcall zero_block
+02F4  0012     RETURN 0                           233:       return 0
+                                                  234:   zero_block
+                                                  235:   loop_h
+02F6  60EA     CPFSLT FSR0H, ACCESS               236:       cpfslt FSR0H, 0
+02F8  D002     BRA 0x2FE                          237:       bra    compare_l
+02FA  6AEE     CLRF POSTINC0, ACCESS              238:       clrf   POSTINC0, 0
+02FC  D7FC     BRA 0x2F6                          239:       bra    loop_h
+                                                  240:   compare_l
+02FE  50F3     MOVF PRODL, W, ACCESS              241:       movf   PRODL, 0, 0
+                                                  242:   loop_l
+0300  60E9     CPFSLT FSR0L, ACCESS               243:       cpfslt FSR0L, 0
+0302  0012     RETURN 0                           244:       return 0
+0304  6AEE     CLRF POSTINC0, ACCESS              245:       clrf   POSTINC0, 0
+0306  D7FC     BRA 0x300                          246:       bra    loop_l
+                                                  247:   
+                                                  248:           GLOBAL __zero_memory
+                                                  249:   
+                                                  250:           GLOBAL SRCON0bits
+                                                  251:           GLOBAL SRCON0
+                                                  252:           GLOBAL SRCON1bits
+                                                  253:           GLOBAL SRCON1
+                                                  254:           GLOBAL CM2CON0bits
+                                                  255:           GLOBAL CM2CON0
+                                                  256:           GLOBAL CM2CON1bits
+                                                  257:           GLOBAL CM2CON1
+                                                  258:           GLOBAL CM1CON0bits
+                                                  259:           GLOBAL CM1CON0
+                                                  260:           GLOBAL SSPMSKbits
+                                                  261:           GLOBAL SSPMSK
+                                                  262:           GLOBAL APFCONbits
+                                                  263:           GLOBAL APFCON
+                                                  264:           GLOBAL SLRCONbits
+                                                  265:           GLOBAL SLRCON
+                                                  266:           GLOBAL WPUAbits
+                                                  267:           GLOBAL WPUA
+                                                  268:           GLOBAL WPUBbits
+                                                  269:           GLOBAL WPUB
+                                                  270:           GLOBAL IOCAbits
+                                                  271:           GLOBAL IOCA
+                                                  272:           GLOBAL IOCBbits
+                                                  273:           GLOBAL IOCB
+                                                  274:           GLOBAL ANSELbits
+                                                  275:           GLOBAL ANSEL
+                                                  276:           GLOBAL ANSELHbits
+                                                  277:           GLOBAL ANSELH
+                                                  278:           GLOBAL PORTAbits
+                                                  279:           GLOBAL PORTA
+                                                  280:           GLOBAL PORTBbits
+                                                  281:           GLOBAL PORTB
+                                                  282:           GLOBAL PORTCbits
+                                                  283:           GLOBAL PORTC
+                                                  284:           GLOBAL LATAbits
+                                                  285:           GLOBAL LATA
+                                                  286:           GLOBAL LATBbits
+                                                  287:           GLOBAL LATB
+                                                  288:           GLOBAL LATCbits
+                                                  289:           GLOBAL LATC
+                                                  290:           GLOBAL DDRAbits
+                                                  291:           GLOBAL DDRA
+                                                  292:           GLOBAL TRISAbits
+                                                  293:           GLOBAL TRISA
+                                                  294:           GLOBAL DDRBbits
+                                                  295:           GLOBAL DDRB
+                                                  296:           GLOBAL TRISBbits
+                                                  297:           GLOBAL TRISB
+                                                  298:           GLOBAL DDRCbits
+                                                  299:           GLOBAL DDRC
+                                                  300:           GLOBAL TRISCbits
+                                                  301:           GLOBAL TRISC
+                                                  302:           GLOBAL OSCTUNEbits
+                                                  303:           GLOBAL OSCTUNE
+                                                  304:           GLOBAL PIE1bits
+                                                  305:           GLOBAL PIE1
+                                                  306:           GLOBAL PIR1bits
+                                                  307:           GLOBAL PIR1
+                                                  308:           GLOBAL IPR1bits
+                                                  309:           GLOBAL IPR1
+                                                  310:           GLOBAL PIE2bits
+                                                  311:           GLOBAL PIE2
+                                                  312:           GLOBAL PIR2bits
+                                                  313:           GLOBAL PIR2
+                                                  314:           GLOBAL IPR2bits
+                                                  315:           GLOBAL IPR2
+                                                  316:           GLOBAL EECON1bits
+                                                  317:           GLOBAL EECON1
+                                                  318:           GLOBAL EECON2
+                                                  319:           GLOBAL EEDATA
+                                                  320:           GLOBAL EEADRbits
+                                                  321:           GLOBAL EEADR
+                                                  322:           GLOBAL EEADRHbits
+                                                  323:           GLOBAL EEADRH
+                                                  324:           GLOBAL RCSTAbits
+                                                  325:           GLOBAL RCSTA
+                                                  326:           GLOBAL TXSTAbits
+                                                  327:           GLOBAL TXSTA
+                                                  328:           GLOBAL TXREG
+                                                  329:           GLOBAL RCREG
+                                                  330:           GLOBAL SPBRG
+                                                  331:           GLOBAL SPBRGH
+                                                  332:           GLOBAL T3CONbits
+                                                  333:           GLOBAL T3CON
+                                                  334:           GLOBAL TMR3L
+                                                  335:           GLOBAL TMR3H
+                                                  336:           GLOBAL ECCP1ASbits
+                                                  337:           GLOBAL ECCP1AS
+                                                  338:           GLOBAL PWM1CONbits
+                                                  339:           GLOBAL PWM1CON
+                                                  340:           GLOBAL BAUDCONbits
+                                                  341:           GLOBAL BAUDCON
+                                                  342:           GLOBAL BAUDCTLbits
+                                                  343:           GLOBAL BAUDCTL
+                                                  344:           GLOBAL PSTRCONbits
+                                                  345:           GLOBAL PSTRCON
+                                                  346:           GLOBAL VREFCON0bits
+                                                  347:           GLOBAL VREFCON0
+                                                  348:           GLOBAL VREFCON1bits
+                                                  349:           GLOBAL VREFCON1
+                                                  350:           GLOBAL VREFCON2bits
+                                                  351:           GLOBAL VREFCON2
+                                                  352:           GLOBAL CCP1CONbits
+                                                  353:           GLOBAL CCP1CON
+                                                  354:           GLOBAL CCPR1
+                                                  355:           GLOBAL CCPR1L
+                                                  356:           GLOBAL CCPR1H
+                                                  357:           GLOBAL ADCON2bits
+                                                  358:           GLOBAL ADCON2
+                                                  359:           GLOBAL ADCON1bits
+                                                  360:           GLOBAL ADCON1
+                                                  361:           GLOBAL ADCON0bits
+                                                  362:           GLOBAL ADCON0
+                                                  363:           GLOBAL ADRES
+                                                  364:           GLOBAL ADRESL
+                                                  365:           GLOBAL ADRESH
+                                                  366:           GLOBAL SSPCON2bits
+                                                  367:           GLOBAL SSPCON2
+                                                  368:           GLOBAL SSPCON1bits
+                                                  369:           GLOBAL SSPCON1
+                                                  370:           GLOBAL SSPSTATbits
+                                                  371:           GLOBAL SSPSTAT
+                                                  372:           GLOBAL SSPADD
+                                                  373:           GLOBAL SSPBUF
+                                                  374:           GLOBAL T2CONbits
+                                                  375:           GLOBAL T2CON
+                                                  376:           GLOBAL PR2
+                                                  377:           GLOBAL TMR2
+                                                  378:           GLOBAL T1CONbits
+                                                  379:           GLOBAL T1CON
+                                                  380:           GLOBAL TMR1L
+                                                  381:           GLOBAL TMR1H
+                                                  382:           GLOBAL RCONbits
+                                                  383:           GLOBAL RCON
+                                                  384:           GLOBAL WDTCONbits
+                                                  385:           GLOBAL WDTCON
+                                                  386:           GLOBAL OSCCON2bits
+                                                  387:           GLOBAL OSCCON2
+                                                  388:           GLOBAL OSCCONbits
+                                                  389:           GLOBAL OSCCON
+                                                  390:           GLOBAL T0CONbits
+                                                  391:           GLOBAL T0CON
+                                                  392:           GLOBAL TMR0L
+                                                  393:           GLOBAL TMR0H
+                                                  394:           GLOBAL STATUSbits
+                                                  395:           GLOBAL STATUS
+                                                  396:           GLOBAL FSR2
+                                                  397:           GLOBAL FSR2L
+                                                  398:           GLOBAL FSR2H
+                                                  399:           GLOBAL PLUSW2
+                                                  400:           GLOBAL PREINC2
+                                                  401:           GLOBAL POSTDEC2
+                                                  402:           GLOBAL POSTINC2
+                                                  403:           GLOBAL INDF2
+                                                  404:           GLOBAL BSR
+                                                  405:           GLOBAL FSR1
+                                                  406:           GLOBAL FSR1L
+                                                  407:           GLOBAL FSR1H
+                                                  408:           GLOBAL PLUSW1
+                                                  409:           GLOBAL PREINC1
+                                                  410:           GLOBAL POSTDEC1
+                                                  411:           GLOBAL POSTINC1
+                                                  412:           GLOBAL INDF1
+                                                  413:           GLOBAL W
+                                                  414:           GLOBAL WREG
+                                                  415:           GLOBAL FSR0
+                                                  416:           GLOBAL FSR0L
+                                                  417:           GLOBAL FSR0H
+                                                  418:           GLOBAL PLUSW0
+                                                  419:           GLOBAL PREINC0
+                                                  420:           GLOBAL POSTDEC0
+                                                  421:           GLOBAL POSTINC0
+                                                  422:           GLOBAL INDF0
+                                                  423:           GLOBAL INTCON3bits
+                                                  424:           GLOBAL INTCON3
+                                                  425:           GLOBAL INTCON2bits
+                                                  426:           GLOBAL INTCON2
+                                                  427:           GLOBAL INTCONbits
+                                                  428:           GLOBAL INTCON
+                                                  429:           GLOBAL PROD
+                                                  430:           GLOBAL PRODL
+                                                  431:           GLOBAL PRODH
+                                                  432:           GLOBAL TABLAT
+                                                  433:           GLOBAL TBLPTR
+                                                  434:           GLOBAL TBLPTRL
+                                                  435:           GLOBAL TBLPTRH
+                                                  436:           GLOBAL TBLPTRU
+                                                  437:           GLOBAL PC
+                                                  438:           GLOBAL PCL
+                                                  439:           GLOBAL PCLATH
+                                                  440:           GLOBAL PCLATU
+                                                  441:           GLOBAL STKPTRbits
+                                                  442:           GLOBAL STKPTR
+                                                  443:           GLOBAL TOS
+                                                  444:           GLOBAL TOSL
+                                                  445:           GLOBAL TOSH
+                                                  446:           GLOBAL TOSU
+                                                  447:   
+                                                  448:   ;-------------------------------------------------------------------------
+                                                  449:   
+                                                  450:           LIST
+                                                  451:           END
