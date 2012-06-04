@@ -1,7 +1,7 @@
 wirelesstemp
 ============
 
-![](wtemp.jpg "Wirelesstemp board")
+![](/skoo/wirelesstemp/blob/master/wtemp.jpg?raw=true "Wirelesstemp board")
 
 wirelesstemp is a wireless temperature sensor with following components:
 
